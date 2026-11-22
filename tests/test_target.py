@@ -203,3 +203,32 @@ class TestObservedValues:
     def test_values_are_listed_once_in_first_seen_order(self):
         records = [{"models": ["b", "a"]}, {"models": None}, {"models": ["a", "c"]}, {}]
         assert observed_values(records, "models") == ["b", "a", "c"]
+
+
+class TestTruncationNote:
+    def record(self, **fields):
+        return {"id": "pier-03", "status": "ok", "total_s": 3.0, "error": None, **fields}
+
+    def test_a_cut_answer_is_flagged_on_its_line(self):
+        line = progress_line(3, 9, self.record(truncated=True, answer="There are four", reasoning_chars=0))
+        assert line.endswith("route=-  [cut at the token limit]")
+
+    def test_an_empty_answer_after_reasoning_was_cut_while_thinking(self):
+        line = progress_line(3, 9, self.record(truncated=True, answer="", reasoning_chars=900))
+        assert line.endswith("route=-  [cut while thinking]")
+
+    def test_thinking_tags_inside_the_answer_are_not_read(self):
+        line = progress_line(3, 9, self.record(truncated=True, answer="<think>Counting the", reasoning_chars=0))
+        assert line.endswith("[cut at the token limit]")
+
+    def test_unknown_reasoning_is_not_called_thinking(self):
+        line = progress_line(3, 9, self.record(truncated=True, answer="", reasoning_chars=None))
+        assert line.endswith("[cut at the token limit]")
+
+    def test_an_empty_answer_without_reasoning_is_cut_at_the_limit(self):
+        line = progress_line(3, 9, self.record(truncated=True, answer="", reasoning_chars=0))
+        assert line.endswith("[cut at the token limit]")
+
+    def test_answers_that_were_not_cut_have_no_note(self):
+        for flag in (False, None):
+            assert "cut" not in progress_line(3, 9, self.record(truncated=flag, answer="", reasoning_chars=5))

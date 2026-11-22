@@ -36,9 +36,35 @@ from horus_bench_kit.testset import (
 
 TARGETS = ("openai",)
 CONTEXT_SUFFIX = ".txt"
-HEADLINE = ("answer_correct_auto", "source_correct_auto", "status", "total_s", "ttft_s", "usage")
+HEADLINE = (
+    "answer_correct_auto",
+    "answer_correct_completed",
+    "truncated",
+    "source_correct_auto",
+    "status",
+    "total_s",
+    "ttft_s",
+    "usage",
+)
 TESTSET_PREFIX = "testset: "
 TIMEOUT_HELP = "seconds to wait for the server to connect or to send more data"
+REASONING_EFFORT_HELP = (
+    "send reasoning_effort with each request, for example none, low, medium or high; "
+    "the values a server accepts vary. Not sent by default"
+)
+EXTRA_BODY_HELP = (
+    "JSON object added to every request, for server-specific fields such as "
+    '\'{"chat_template_kwargs": {"enable_thinking": false}}\''
+)
+KIT_BODY_KEYS = {
+    "model": "--model",
+    "messages": "the test set and --system-prompt-file",
+    "max_tokens": "--max-tokens",
+    "temperature": "--temperature",
+    "stream": "--no-stream",
+    "stream_options": "--no-stream-usage",
+    "reasoning_effort": "--reasoning-effort",
+}
 
 ContextFinder = Callable[[dict[str, Any]], Sequence[Path]]
 
@@ -78,6 +104,8 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--no-stream", action="store_true", help="wait for whole replies (no time to first token)")
     run.add_argument("--no-stream-usage", action="store_true", help="do not send stream_options.include_usage")
     run.add_argument("--warmup", metavar="QUESTION", help="ask this first and do not score it")
+    run.add_argument("--reasoning-effort", metavar="LEVEL", help=REASONING_EFFORT_HELP)
+    run.add_argument("--extra-body", metavar="JSON", help=EXTRA_BODY_HELP)
 
     summarize = commands.add_parser("resummarize", help="rebuild the summary after a manual review")
     summarize.add_argument("report")
@@ -86,6 +114,23 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("reports", nargs="+", metavar="REPORT")
     compare.add_argument("--out", help="write the Markdown to this file instead of the screen")
     return parser
+
+
+def parse_extra_body(raw: str | None) -> tuple[dict[str, Any] | None, list[str]]:
+    if raw is None:
+        return None, []
+    try:
+        body = json.loads(raw)
+    except ValueError as exc:
+        return None, [f"--extra-body is not valid JSON: {exc}"]
+    if not isinstance(body, dict):
+        return None, ["--extra-body must be a JSON object, such as '{\"key\": \"value\"}'"]
+    errors = [
+        f"--extra-body must not set {key!r}: use {option}"
+        for key, option in KIT_BODY_KEYS.items()
+        if key in body
+    ]
+    return (None, errors) if errors else (body, [])
 
 
 def run_argument_errors(args: argparse.Namespace) -> list[str]:
@@ -113,6 +158,9 @@ def run_argument_errors(args: argparse.Namespace) -> list[str]:
         errors.append(f"--context-dir {Path(args.context_dir).name!r} is not a folder")
     if args.system_prompt_file and not Path(args.system_prompt_file).is_file():
         errors.append(f"--system-prompt-file {Path(args.system_prompt_file).name!r} does not exist")
+    if args.reasoning_effort is not None and args.reasoning_effort.split() != [args.reasoning_effort]:
+        errors.append("--reasoning-effort must be one word, such as low")
+    errors.extend(parse_extra_body(args.extra_body)[1])
     return errors
 
 
@@ -198,6 +246,8 @@ def run_section(
             "system_prompt": "file" if args.system_prompt_file else "default",
             "system_prompt_sha256": hashlib.sha256(target.system_prompt.encode("utf-8")).hexdigest(),
             "context_files": context_files,
+            "reasoning_effort": target.reasoning_effort,
+            "extra_body": target.extra_body,
         },
         "observed_models": [],
     }
@@ -250,6 +300,8 @@ def run_command(args: argparse.Namespace) -> int:
         timeout=args.timeout,
         stream=not args.no_stream,
         stream_usage=not args.no_stream_usage,
+        reasoning_effort=args.reasoning_effort,
+        extra_body=parse_extra_body(args.extra_body)[0],
     )
     files_for = context_finder(args.testset, args.context_dir)
     started_at = datetime.now(timezone.utc)
@@ -274,6 +326,13 @@ def run_command(args: argparse.Namespace) -> int:
     save(records)
     summary = build_summary(records)
     print(json.dumps({key: summary[key] for key in HEADLINE}, indent=2))
+    if summary["truncated"]:
+        print(
+            f"[warn] {summary['truncated']} answer(s) ended with finish reason 'length': the server reported "
+            f"that it hit a token limit (--max-tokens was {args.max_tokens}; the server may have a lower "
+            "limit of its own). They usually score as wrong, and answer_correct_completed leaves them out. "
+            "Raise --max-tokens, or turn reasoning down with --reasoning-effort or --extra-body."
+        )
     if not any(record["status"] == STATUS_OK for record in records):
         print(f"[error] no question got an answer from {run['endpoint']}; the errors are in {out_path}")
         return 1

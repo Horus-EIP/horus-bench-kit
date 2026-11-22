@@ -24,11 +24,13 @@ CORE_PROFILE = Profile(summary_sections=())
 REQUIRED_QUESTION_KEYS = ("id", "category")
 METRIC_ROWS = (
     MetricRow("answer_auto", "Answers correct, automatic", "every answer pattern matches", "%"),
+    MetricRow("answer_completed", "Answers correct, completed", "as above, leaving out answers cut short", "%"),
     MetricRow("answer_reviewed", "Answers correct, reviewed", "both reviewers marked it correct", "%"),
     MetricRow("source", "Sources correct", "expected documents cited, or ranked at the top", "%"),
     MetricRow("route", "Route correct", "direct answer or retrieval, as expected", "%"),
     MetricRow("answered", "Questions answered", "status ok", "count", is_total=True),
     MetricRow("failed", "Errors and timeouts", "any other status", "count", is_total=True),
+    MetricRow("truncated", "Cut at the token limit", "finish reason length", "count", is_total=True),
     MetricRow("fallbacks", "Fallback answers", "the answer holds a fallback marker", "count", is_total=True),
     MetricRow("total_median", "Total time, median", "question sent to full answer", "s"),
     MetricRow("total_p90", "Total time, p90", "question sent to full answer", "s"),
@@ -91,11 +93,13 @@ def side_metrics(side: Side) -> dict[str, Metric]:
     answered = summary["status"].get(STATUS_OK, 0)
     return {
         "answer_auto": _rate_metric(summary["answer_correct_auto"]),
+        "answer_completed": _rate_metric(summary["answer_correct_completed"]),
         "answer_reviewed": Metric(review["answer_correct_pct"], n=review["reviewed"] or None),
         "source": _rate_metric(summary["source_correct_auto"]),
         "route": _rate_metric(summary["route_correct"]),
         "answered": Metric(answered, n=questions),
         "failed": Metric(questions - answered, n=questions),
+        "truncated": Metric(summary["truncated"], n=questions),
         "fallbacks": Metric(sum(summary["fallbacks"].values()), n=questions),
         "total_median": _stat_metric(summary["total_s"], "median"),
         "total_p90": _stat_metric(summary["total_s"], "p90"),
