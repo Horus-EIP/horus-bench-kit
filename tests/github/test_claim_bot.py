@@ -182,12 +182,12 @@ class TestDecisions:
         assert decide("/unassign", commenter="Ada", assignees=("ada",)) == claims.UNASSIGN
         assert decide("/unassign", commenter="grace", assignees=("ada",)) == claims.IGNORE
 
-    @pytest.mark.parametrize(
-        "fields",
-        [{"state": "closed"}, {"labels": ()}, {"labels": ("bug", "enhancement")}],
-    )
-    def test_a_closed_or_unlabelled_issue_is_not_eligible(self, fields):
-        assert decide("I'd like to work on this", **fields) == claims.NOT_ELIGIBLE
+    def test_a_closed_issue_is_not_eligible(self):
+        assert decide("I'd like to work on this", state="closed") == claims.NOT_ELIGIBLE
+
+    @pytest.mark.parametrize("labels", [(), ("enhancement",), ("bug", "documentation"), ("help wanted",)])
+    def test_any_open_issue_can_be_claimed_whatever_its_labels(self, labels):
+        assert decide("I'd like to work on this", labels=labels) == claims.ASSIGN
 
     def test_bots_pull_requests_ordinary_comments_and_the_assignee_are_ignored(self):
         assert decide("/assign", bot=True) == claims.IGNORE
@@ -229,16 +229,31 @@ class TestHandleComment:
 
     def test_a_taken_issue_lists_up_to_five_free_good_first_issues(self):
         free = [item(number) for number in range(10, 17)]
-        others = [item(8, assignees=("lin",)), item(9, pull_request=True), item(20, labels=("help wanted",))]
+        others = [item(8, assignees=("lin",)), item(9, pull_request=True)]
         github = FakeGitHub([item(7, assignees=("grace",)), *free, *others])
         claims.handle_comment(comment_event(7, "Can I work on this?"), github, PHRASES)
         listed = re.findall(r"^- #(\d+) ", github.comments()[0], re.MULTILINE)
         assert listed == ["10", "11", "12", "13", "14"]
 
+    def test_suggestions_list_good_first_issues_first_then_any_other_free_issue(self):
+        github = FakeGitHub([
+            item(7, assignees=("grace",)),
+            item(8, labels=("enhancement",)),
+            item(9, labels=("good first issue",)),
+            item(10, labels=()),
+            item(11, labels=("good first issue",), assignees=("lin",)),
+            item(12, labels=("Good First Issue",)),
+            item(13, labels=("bug",), pull_request=True),
+            item(14, labels=("bug",), state="closed"),
+        ])
+        claims.handle_comment(comment_event(7, "Can I work on this?"), github, PHRASES)
+        listed = re.findall(r"^- #(\d+) ", github.comments()[0], re.MULTILINE)
+        assert listed == ["9", "12", "8", "10"]
+
     def test_no_free_issue_says_so(self):
         github = FakeGitHub([item(7, assignees=("grace",))])
         claims.handle_comment(comment_event(7, "/take"), github, PHRASES)
-        assert "no other free good first issue" in github.comments()[0]
+        assert "no other free issue" in github.comments()[0]
 
     def test_the_limit_counts_open_claimed_issues_of_the_commenter(self):
         held = [item(1, labels=("good first issue", "claimed"), assignees=("ada",)),
@@ -264,10 +279,27 @@ class TestHandleComment:
         assert claims.handle_comment(bot, github, PHRASES) == claims.IGNORE
         assert github.calls == []
 
-    def test_a_claim_on_an_issue_that_is_not_eligible_changes_nothing(self):
-        github = FakeGitHub([item(7, labels=("bug",))])
+    def test_a_claim_on_a_closed_issue_changes_nothing(self):
+        github = FakeGitHub([item(7, state="closed")])
         assert claims.handle_comment(comment_event(7, "/assign"), github, PHRASES) == claims.NOT_ELIGIBLE
         assert github.written() == []
+
+    def test_an_issue_with_only_the_enhancement_label_is_claimed(self):
+        github = FakeGitHub([item(4, labels=("enhancement",))])
+        assert claims.handle_comment(comment_event(4, "/assign"), github, PHRASES) == claims.ASSIGN
+        assert ("POST", "/issues/4/assignees", {"assignees": ["ada"]}) in github.written()
+
+    def test_a_pull_request_is_still_not_claimable(self):
+        github = FakeGitHub([item(5, labels=("enhancement",), pull_request=True)])
+        assert claims.handle_comment(comment_event(5, "/assign"), github, PHRASES) == claims.IGNORE
+        assert github.written() == []
+
+    def test_the_real_comment_with_typographic_apostrophes_is_a_claim(self):
+        body = ("Hi! I\u2019d like to work on this issue.\n\nI\u2019ll focus on improving how hbk-eval handles "
+                "truncated responses and reasoning models, along with adding the necessary tests.\n\n"
+                "Happy to contribute. Could you assign this issue to me?")
+        github = FakeGitHub([item(4, labels=("enhancement",))])
+        assert claims.handle_comment(comment_event(4, body), github, PHRASES) == claims.ASSIGN
 
 
 class Response:

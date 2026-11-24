@@ -329,7 +329,7 @@ The tests start a small fake OpenAI-compatible server on `127.0.0.1`; they need 
 
 ## Contributing
 
-Contributions are welcome. Pick an issue labelled `good first issue` or `help wanted` and comment "I'd like to work on this": a bot assigns it to you. [CONTRIBUTING.md](CONTRIBUTING.md) has the steps, the kit's rules, the commit norm and the sign-off every commit needs. Questions go to [Discussions](https://github.com/Horus-EIP/horus-bench-kit/discussions).
+Contributions are welcome. Pick an open issue (the ones labelled `good first issue` are the smallest) and comment "I'd like to work on this": a bot assigns it to you. [CONTRIBUTING.md](CONTRIBUTING.md) has the steps, the kit's rules, the commit norm and the sign-off every commit needs. Questions go to [Discussions](https://github.com/Horus-EIP/horus-bench-kit/discussions).
 
 By Apache License 2.0 section 5, any contribution you submit for inclusion is licensed under the same Apache License 2.0, with no extra terms; you need no separate agreement. Everyone who takes part follows the [Code of Conduct](CODE_OF_CONDUCT.md). Report a vulnerability privately, as [SECURITY.md](SECURITY.md) explains.
 

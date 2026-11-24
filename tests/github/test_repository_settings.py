@@ -67,7 +67,7 @@ def labels():
 
 def claim_labels():
     claims = load_claims()
-    return {*claims.ELIGIBLE_LABELS, claims.CLAIMED}
+    return {claims.SUGGESTED_LABEL, claims.CLAIMED}
 
 
 def test_the_workflows_are_the_five_we_expect():
@@ -226,7 +226,7 @@ class TestLabelsAndTemplates:
         claims = load_claims()
         claimed = next(label for label in labels if label["name"] == claims.CLAIMED)
         assert (claimed["color"], claimed["description"]) == (claims.CLAIMED_COLOR, claims.CLAIMED_DESCRIPTION)
-        assert {claims.SUGGESTED_LABEL, *claims.ELIGIBLE_LABELS} <= LABELS
+        assert claims.SUGGESTED_LABEL in LABELS
 
     def test_every_form_has_a_body_and_only_known_labels(self):
         forms = sorted((GITHUB / "ISSUE_TEMPLATE").glob("*.yml"))

@@ -6,7 +6,7 @@ body:
       value: |
         For maintainers. A good first issue takes a newcomer a few hours, and says which files to look at and how to know it is done.
 
-        Once the issue is written, a maintainer adds the `good first issue` label by hand. The form adds no label, so that an issue opened with it by anyone else cannot be claimed.
+        Once the issue is written, a maintainer adds the `good first issue` label by hand. The form adds no label, so that an issue opened with it by anyone else is not listed as a good first issue.
   - type: textarea
     id: task
     attributes:

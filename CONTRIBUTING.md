@@ -4,14 +4,14 @@ Thanks for your interest in the kit. Its home is [github.com/Horus-EIP/horus-ben
 
 ## 1. Find an issue
 
-- Issues labelled **`good first issue`** are small and say which files to look at. Issues labelled **`help wanted`** are open to anyone too.
+- Any open issue can be claimed. Issues labelled **`good first issue`** are small and say which files to look at, a good place to start.
 - To take one, comment on it: "I'd like to work on this", or `/assign`. A bot assigns it to you and replies with the steps below. In French, "je voudrais travailler sur" or "je peux m'en occuper" works too.
 - The rules:
   - open a draft pull request within **7 days**;
   - hold at most **two** claimed issues at a time;
   - comment `/unassign` to give an issue back;
   - without activity from you, meaning no comment from you on the issue and no open pull request of yours that mentions it (`Fixes #N`), the bot reminds you after **7 days** and unassigns the issue after **14 days**, so that someone else can take it.
-- If the issue is already taken, the bot points you to other free ones.
+- If the issue is already taken, the bot points you to other free ones, `good first issue` first.
 - Questions go to [Discussions](https://github.com/Horus-EIP/horus-bench-kit/discussions). Bugs and feature requests go to issues, through the forms.
 
 ## 2. Make the change
