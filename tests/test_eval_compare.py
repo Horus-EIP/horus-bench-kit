@@ -5,6 +5,7 @@ import pytest
 
 from horus_bench_kit.eval_compare import compare_markdown, compare_reports, load_eval_report
 from horus_bench_kit.files import write_json
+from horus_bench_kit.markdown import EMPTY
 from horus_bench_kit.report import Profile, blank_review, build_report, question_record
 
 
@@ -30,7 +31,7 @@ def items(make_item):
     ]
 
 
-def outcome(answer, total_s=2.0, ttft_s=0.5, status="ok", cited=None):
+def outcome(answer, total_s=2.0, ttft_s=0.5, status="ok", cited=None, finish_reason=None):
     return {
         "mode": "chat",
         "status": status,
@@ -40,6 +41,7 @@ def outcome(answer, total_s=2.0, ttft_s=0.5, status="ok", cited=None):
         "ttft_s": ttft_s,
         "models": ["harbour-7b"],
         "cited_sources": cited,
+        "finish_reason": finish_reason,
     }
 
 
@@ -188,3 +190,30 @@ class TestReportFiles:
         path.write_text(json.dumps({"questions": [{"id": "x"}]}), encoding="utf-8")
         with pytest.raises(ValueError, match="broken.json: a question record has no category"):
             load_eval_report(path)
+
+
+class TestTruncation:
+    def test_cut_answers_have_their_own_rows(self, items):
+        answers = {"t-01": "Fourteen.", "t-02": "The harbour master is", "t-03": "7"}
+        overrides = {item["id"]: {"finish_reason": "stop"} for item in items}
+        overrides["t-02"] = {"finish_reason": "length"}
+        markdown = compare_reports([make_report(items, answers, **overrides)])
+        assert "| Answers correct, automatic (%) | every answer pattern matches | 66.7% (n=3) |" in markdown
+        assert (
+            "| Answers correct, completed (%) | as above, leaving out answers cut short | 100.0% (n=2) |"
+            in markdown
+        )
+        assert "| Cut at the token limit | finish reason length | 1 (n=3) |" in markdown
+
+    def test_a_report_without_finish_reasons_shows_no_cut_count(self, before):
+        markdown = compare_reports([before])
+        assert f"| Cut at the token limit | finish reason length | {EMPTY} |" in markdown
+        assert "| Answers correct, completed (%) | as above, leaving out answers cut short | 66.7% (n=3) |" in markdown
+
+    def test_two_runs_show_the_change_in_cut_answers(self, items):
+        answers = {"t-01": "Fourteen.", "t-02": "Odile", "t-03": "7"}
+        stopped = {item["id"]: {"finish_reason": "stop"} for item in items}
+        cut = {**stopped, "t-02": {"finish_reason": "length"}}
+        markdown = compare_reports([make_report(items, answers, **cut), make_report(items, answers, **stopped)])
+        row = next(line for line in markdown.splitlines() if line.startswith("| Cut at the token limit |"))
+        assert row.startswith("| Cut at the token limit | finish reason length | 1 (n=3) | 0 (n=3) |")

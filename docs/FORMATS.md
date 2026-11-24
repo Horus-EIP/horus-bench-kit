@@ -126,7 +126,7 @@ These keys are written by `hbk-eval run`. A runner of its own can record other k
 | `completed` | `true` once every selected question was asked. |
 | `kit_version` | Version of horus-bench-kit. |
 | `warmup` | The warmup question, which is not scored, or `null`. |
-| `settings` | `max_tokens`, `temperature`, `timeout_s`, `stream`, `stream_usage`, `system_prompt` (`default` or `file`), `system_prompt_sha256` (SHA-256 of the prompt text in UTF-8) and `context_files` (how many questions were sent with a context file). |
+| `settings` | `max_tokens`, `temperature`, `timeout_s`, `stream`, `stream_usage`, `system_prompt` (`default` or `file`), `system_prompt_sha256` (SHA-256 of the prompt text in UTF-8), `context_files` (how many questions were sent with a context file), `reasoning_effort` (the `--reasoning-effort` value, or `null` when none was sent) and `extra_body` (the `--extra-body` object as given, or `null`). Reports written before these two keys existed sent neither. |
 | `observed_models` | Model names that the server reported, in first-seen order. |
 
 The API key is never recorded.
@@ -145,7 +145,7 @@ The API key is never recorded.
 
 ### `questions[]`
 
-One record per question, in the order asked. With the kit's default profile, a record has these 27 keys, in this order:
+One record per question, in the order asked. With the kit's default profile, a record has these 30 keys, in this order:
 
 | Key | Meaning |
 |---|---|
@@ -160,7 +160,10 @@ One record per question, in the order asked. With the kit's default profile, a r
 | `ttft_s` | Time to first token: from sending the question to the first generated token, reasoning or answer. Streamed replies only; `null` otherwise. |
 | `total_s` | From sending the question to the end of the answer. |
 | `usage` | The server's `usage` object (`prompt_tokens`, `completion_tokens` and so on), or `null`. |
-| `answer` | The answer text, or `null`. |
+| `answer` | The answer text, or `null`. A cut answer keeps the text received before the cut. |
+| `finish_reason` | The server's finish reason for the answer, such as `stop` or `length`; `null` when the server sent none or the question failed. |
+| `truncated` | `true` when `finish_reason` is `length`: the answer was cut at the token limit, even if it is empty. `false` for any other finish reason, so an empty answer that the server ended normally is not counted as cut. `null` when `finish_reason` is `null`. The automatic score is unchanged: a cut answer is scored like any other. |
+| `reasoning_chars` | Length of the reasoning text the server sent apart from the answer (`reasoning_content`, or `reasoning`); `0` when it sent none, `null` when the target cannot tell. |
 | `retrieval_steps` | How many retrievals the target ran; `null` when unknown. |
 | `retrieved_sources` | One ranked list of document names per retrieval; `null` when unknown. |
 | `cited_sources` | Document names that the answer cites; `null` when the target cannot tell. |
@@ -187,6 +190,8 @@ An outcome with `"mode": "retrieval"` comes from a target that retrieves documen
 | `total_s` | Stats. |
 | `status` | Count per status, in first-seen order. |
 | `fallbacks` | Count per fallback name, in first-seen order. |
+| `truncated` | Records with `truncated: true`; `null` when no record has a known `truncated` value, as in reports written before the key existed. |
+| `answer_correct_completed` | Rate of `answer_correct_auto` over the same records, leaving out only those with `truncated: true`. Records with `truncated` `false` or `null`, failed questions and blank answers count as in `answer_correct_auto`, so the two rates are equal when nothing was cut. |
 | `source_basis` | Count per `source_basis` over the items outside `not_in_corpus`, with `not_observable` for the ones not scored. |
 | `ttft_s` | Stats. |
 | `usage` | `questions` (records with a usage object), and stats of `prompt_tokens` and `completion_tokens`; `null` when no record has usage. |
@@ -259,7 +264,7 @@ report = build_report(label="run", run=run, testset=testset, records=records,
                       sections={"machine": machine}, profile=PROFILE)
 ```
 
-`hbk-eval compare` reads any JSON report whose `questions` records hold at least `id` and `category`. It recomputes the core summary from the records and ignores the keys it does not know. It checks `schema_version` only for its own kind. `hbk-eval resummarize` only rewrites `horus-bench-kit-eval` reports; a product calls `resummarize(report, PROFILE)` itself.
+`hbk-eval compare` reads any JSON report whose `questions` records hold at least `id` and `category`. It recomputes the core summary from the records and ignores the keys it does not know. A record without `truncated` counts as not known to be cut, so an older report shows no count of cut answers and the same completed rate as its automatic one. It checks `schema_version` only for its own kind. `hbk-eval resummarize` only rewrites `horus-bench-kit-eval` reports; a product calls `resummarize(report, PROFILE)` itself.
 
 ## Checking JSON replies
 

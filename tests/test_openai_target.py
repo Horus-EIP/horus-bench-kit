@@ -189,3 +189,118 @@ class TestReadBody:
         assert issubclass(ServerReplyError, ValueError)
         with pytest.raises(ServerReplyError, match=f"unexpected {what}"):
             read_body(body)
+
+
+class TestFinishReason:
+    def test_a_streamed_reply_keeps_its_finish_reason_and_reasoning_length(self, target):
+        outcome = ask(target)
+        assert outcome["finish_reason"] == "stop"
+        assert outcome["reasoning_chars"] == len("Reading.")
+
+    def test_a_streamed_reply_cut_by_the_token_limit_keeps_its_partial_answer(self, target, fake_openai):
+        fake_openai.finish_reason = "length"
+        fake_openai.answer = lambda _body: "There are four"
+        outcome = ask(target)
+        assert (outcome["status"], outcome["finish_reason"]) == ("ok", "length")
+        assert outcome["answer"] == "There are four"
+
+    def test_a_whole_reply_cut_by_the_token_limit_keeps_its_finish_reason(self, target, fake_openai):
+        target.stream = False
+        fake_openai.finish_reason = "length"
+        fake_openai.reasoning = "Let me count the lanterns one by one"
+        fake_openai.answer = lambda _body: ""
+        outcome = ask(target)
+        assert (outcome["status"], outcome["answer"], outcome["finish_reason"]) == ("ok", "", "length")
+        assert outcome["reasoning_chars"] == len("Let me count the lanterns one by one")
+
+    def test_a_whole_reply_without_reasoning_has_no_reasoning_length(self, target, fake_openai):
+        target.stream = False
+        outcome = ask(target)
+        assert (outcome["finish_reason"], outcome["reasoning_chars"]) == ("stop", 0)
+
+    def test_errors_carry_no_finish_reason(self, target, fake_openai):
+        fake_openai.status = 503
+        outcome = ask(target)
+        assert outcome["status"] == "error"
+        assert "finish_reason" not in outcome
+
+    def test_the_last_finish_reason_of_the_stream_wins(self):
+        lines = [
+            b'data: {"choices": [{"delta": {"content": "Four"}, "finish_reason": null}]}\n',
+            b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n',
+            b'data: {"choices": [], "usage": {"completion_tokens": 8}}\n',
+        ]
+        reply = read_stream(lines, 0.0)
+        assert (reply.answer, reply.finish_reason, reply.usage) == ("Four", "length", {"completion_tokens": 8})
+
+    def test_a_streamed_reply_of_reasoning_only_cut_by_the_limit(self):
+        lines = [
+            b'data: {"choices": [{"delta": {"role": "assistant"}}]}\n',
+            b'data: {"choices": [{"delta": {"reasoning_content": "First, count the"}}]}\n',
+            b'data: {"choices": [{"delta": {"reasoning_content": " lanterns on"}}]}\n',
+            b'data: {"choices": [{"delta": {}, "finish_reason": "length"}]}\n',
+            b'data: {"choices": [], "usage": {"completion_tokens": 64}}\n',
+            b"data: [DONE]\n",
+        ]
+        reply = read_stream(lines, 0.0)
+        assert (reply.answer, reply.finish_reason) == ("", "length")
+        assert reply.reasoning_chars == len("First, count the lanterns on")
+        assert reply.ttft_s is not None
+
+    def test_a_stream_without_a_finish_reason_reports_none(self):
+        reply = read_stream([b'data: {"choices": [{"delta": {"content": "14"}}]}\n'], 0.0)
+        assert (reply.finish_reason, reply.reasoning_chars) == (None, 0)
+
+    def test_reasoning_is_counted_under_either_name(self):
+        lines = [
+            b'data: {"choices": [{"delta": {"reasoning_content": "abc"}}]}\n',
+            b'data: {"choices": [{"delta": {"reasoning": "de"}}]}\n',
+            b'data: {"choices": [{"delta": {"content": "14"}}]}\n',
+        ]
+        assert read_stream(lines, 0.0).reasoning_chars == 5
+
+    @pytest.mark.parametrize(
+        ("choice", "expected"),
+        [
+            ({"message": {"content": "14"}, "finish_reason": "stop"}, "stop"),
+            ({"message": {"content": "Four"}, "finish_reason": "length"}, "length"),
+            ({"message": {"content": "14"}, "finish_reason": None}, None),
+            ({"message": {"content": "14"}}, None),
+            ({"message": {"content": "14"}, "finish_reason": ""}, None),
+            ({"message": {"content": "14"}, "finish_reason": 3}, None),
+        ],
+    )
+    def test_a_whole_reply_reads_its_finish_reason_safely(self, choice, expected):
+        assert read_body({"choices": [choice]}).finish_reason == expected
+
+    def test_an_empty_choice_list_has_no_finish_reason(self):
+        reply = read_body({"choices": []})
+        assert (reply.answer, reply.finish_reason, reply.reasoning_chars) == ("", None, 0)
+
+
+class TestReasoningSettings:
+    def test_nothing_extra_is_sent_by_default(self, target, fake_openai):
+        ask(target)
+        body = fake_openai.requests[0]["body"]
+        assert "reasoning_effort" not in body
+        assert list(body) == ["model", "messages", "max_tokens", "temperature", "stream", "stream_options"]
+
+    def test_reasoning_effort_is_sent_when_set(self, target, fake_openai):
+        target.reasoning_effort = "low"
+        ask(target)
+        assert fake_openai.requests[0]["body"]["reasoning_effort"] == "low"
+
+    def test_extra_body_fields_are_added_to_every_request(self, target, fake_openai):
+        target.extra_body = {"chat_template_kwargs": {"enable_thinking": False}, "top_k": 20}
+        ask(target)
+        ask(target)
+        for request in fake_openai.requests:
+            assert request["body"]["chat_template_kwargs"] == {"enable_thinking": False}
+            assert request["body"]["top_k"] == 20
+            assert request["body"]["model"] == "harbour-7b"
+
+    def test_the_kit_settings_win_over_extra_body(self, target, fake_openai):
+        target.extra_body = {"model": "other", "max_tokens": 9, "stream": False}
+        ask(target)
+        body = fake_openai.requests[0]["body"]
+        assert (body["model"], body["max_tokens"], body["stream"]) == ("harbour-7b", 512, True)

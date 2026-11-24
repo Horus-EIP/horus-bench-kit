@@ -139,6 +139,8 @@ class FakeOpenAI:
         self.delay = 0.0
         self.stream_error: dict[str, Any] | None = None
         self.model = "fake-model-1"
+        self.finish_reason: str | None = "stop"
+        self.reasoning: str | None = None
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), handler_for(self))
         self.server.daemon_threads = True
 
@@ -147,9 +149,12 @@ class FakeOpenAI:
         return f"http://127.0.0.1:{self.server.server_address[1]}/v1"
 
     def completion(self, text: str) -> dict[str, Any]:
+        message: dict[str, Any] = {"role": "assistant", "content": text}
+        if self.reasoning is not None:
+            message["reasoning_content"] = self.reasoning
         return {
             "model": self.model,
-            "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
+            "choices": [{"index": 0, "message": message, "finish_reason": self.finish_reason}],
             "usage": {"prompt_tokens": 40, "completion_tokens": len(text.split())},
         }
 
@@ -166,7 +171,9 @@ class FakeOpenAI:
             for piece in (text[:middle], text[middle:])
             if piece
         ]
-        chunks.append({"model": self.model, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]})
+        chunks.append(
+            {"model": self.model, "choices": [{"index": 0, "delta": {}, "finish_reason": self.finish_reason}]}
+        )
         if include_usage:
             usage = {"prompt_tokens": 40, "completion_tokens": len(text.split())}
             chunks.append({"model": self.model, "choices": [], "usage": usage})

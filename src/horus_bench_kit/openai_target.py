@@ -34,6 +34,8 @@ class Reply:
     ttft_s: float | None
     usage: dict[str, Any] | None
     model: str | None
+    finish_reason: str | None = None
+    reasoning_chars: int = 0
 
 
 @dataclass
@@ -47,6 +49,8 @@ class OpenAITarget:
     timeout: float = 600.0
     stream: bool = True
     stream_usage: bool = True
+    reasoning_effort: str | None = None
+    extra_body: dict[str, Any] | None = None
     name: str = "openai"
 
     @property
@@ -60,6 +64,7 @@ class OpenAITarget:
 
     def payload(self, question: str, files: Sequence[Path] = ()) -> dict[str, Any]:
         body: dict[str, Any] = {
+            **(self.extra_body or {}),
             "model": self.model,
             "messages": self.messages(question, files),
             "max_tokens": self.max_tokens,
@@ -68,6 +73,8 @@ class OpenAITarget:
         }
         if self.stream and self.stream_usage:
             body["stream_options"] = {"include_usage": True}
+        if self.reasoning_effort:
+            body["reasoning_effort"] = self.reasoning_effort
         return body
 
     def request(self, payload: dict[str, Any]) -> urllib.request.Request:
@@ -108,6 +115,8 @@ class OpenAITarget:
             total_s=round(time.perf_counter() - started, 3),
             usage=reply.usage,
             models=[reply.model] if reply.model else [],
+            finish_reason=reply.finish_reason,
+            reasoning_chars=reply.reasoning_chars,
         )
         return outcome
 
@@ -132,6 +141,19 @@ def text_or_none(value: Any) -> bool:
     return value is None or isinstance(value, str)
 
 
+def finish_reason_of(choice: dict[str, Any]) -> str | None:
+    reason = choice.get("finish_reason")
+    return reason if isinstance(reason, str) and reason else None
+
+
+def reasoning_text(part: dict[str, Any]) -> str:
+    for key in ("reasoning_content", "reasoning"):
+        value = part.get(key)
+        if isinstance(value, str):
+            return value
+    return ""
+
+
 def read_body(body: Any) -> Reply:
     if not isinstance(body, dict):
         raise unexpected("reply", body)
@@ -143,12 +165,20 @@ def read_body(body: Any) -> Reply:
     message = choices[0].get("message") or {}
     if not isinstance(message, dict) or not text_or_none(message.get("content")):
         raise unexpected("message", message)
-    return Reply(message.get("content") or "", None, body.get("usage"), body.get("model"))
+    return Reply(
+        message.get("content") or "",
+        None,
+        body.get("usage"),
+        body.get("model"),
+        finish_reason_of(choices[0]),
+        len(reasoning_text(message)),
+    )
 
 
 def read_stream(lines: Iterable[bytes], started: float) -> Reply:
     parts: list[str] = []
-    ttft = usage = model = None
+    ttft = usage = model = finish_reason = None
+    reasoning_chars = 0
     streamed = False
     for raw in lines:
         line = raw.decode("utf-8").strip()
@@ -169,11 +199,13 @@ def read_stream(lines: Iterable[bytes], started: float) -> Reply:
         deltas = [choice.get("delta") or {} for choice in choices] if is_object_list(choices) else None
         if deltas is None or not is_object_list(deltas) or not all(text_or_none(d.get("content")) for d in deltas):
             raise unexpected("stream chunk", chunk)
-        for delta in deltas:
+        for choice, delta in zip(choices, deltas, strict=True):
             if ttft is None and (delta.get("content") or delta.get("reasoning_content")):
                 ttft = round(time.perf_counter() - started, 3)
             if delta.get("content"):
                 parts.append(delta["content"])
+            reasoning_chars += len(reasoning_text(delta))
+            finish_reason = finish_reason_of(choice) or finish_reason
     if not streamed:
         raise ServerReplyError("the reply has no 'data:' lines: the server did not stream it; try --no-stream")
-    return Reply("".join(parts), ttft, usage, model)
+    return Reply("".join(parts), ttft, usage, model, finish_reason, reasoning_chars)

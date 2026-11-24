@@ -77,8 +77,23 @@ The `examples/` folder holds a test set of nine questions about a fictional comm
 | `--no-stream` | streaming on | wait for whole replies; the time to first token is then not measured |
 | `--no-stream-usage` | sent | leave out `stream_options.include_usage` for servers that refuse it |
 | `--warmup QUESTION` | none | ask this question first and do not score it, so the model is loaded before the timings start |
+| `--reasoning-effort LEVEL` | not sent | send `reasoning_effort` with each request, as given, for example `none`, `low` or `high` |
+| `--extra-body JSON` | none | a JSON object added to every request, for fields that only some servers know; it may not set a field that another option sets |
 
 Exit codes: `0` when the run finished; `1` when the warmup failed (nothing is written) or no question got an answer (the report is kept, with the errors); `2` for bad options or a test set that does not validate.
+
+### Answers cut by the token limit, and reasoning models
+
+When the server ends a reply with finish reason `length`, it reports that generation stopped at a token limit: usually `--max-tokens`, but a server may also apply a lower limit of its own, such as the room left in its context. The question's line then ends with `[cut at the token limit]`, or `[cut while thinking]` when the answer is empty and the server sent reasoning text apart from it. The record says `"truncated": true` and keeps the partial answer, and the run ends with a warning that counts them. A cut answer is still scored, so it usually counts as wrong in `answer_correct_auto`; `answer_correct_completed` gives the same rate without the cut answers. An empty answer that the server ended any other way is an empty answer, not a cut one. A reply with no finish reason leaves `truncated` at `null`.
+
+To give a reasoning model room, raise `--max-tokens`, or turn its reasoning down. There is no request field that every server understands, so the kit sends none unless you ask:
+
+- `--reasoning-effort LEVEL` sends OpenAI's `reasoning_effort` field, for example `none` to ask for no reasoning, or `low`. Ollama's OpenAI endpoint reads it. Which values a server accepts, and whether it reads the field at all, depend on the server, its version and the model.
+- `--extra-body` sends a server's own fields. For example, `'{"chat_template_kwargs": {"enable_thinking": false}}'` switches thinking off, on llama.cpp's server and on vLLM, for models whose chat template reads `enable_thinking` (such as Qwen3).
+
+Check your server's documentation: the field names change between servers and versions.
+
+A server that refuses a field answers with an HTTP error, which the question records as `status: "error"` with the server's message. A server that ignores an unknown field gives an ordinary answer: compare the reasoning lengths or token counts of two runs to see whether a setting took effect. Both settings are written in the report's `run.settings`, so put no key or token in `--extra-body`. To set the reasoning mode when llama-server starts instead, see `hbk-model-candidates --reasoning`.
 
 ### Review the answers by hand
 

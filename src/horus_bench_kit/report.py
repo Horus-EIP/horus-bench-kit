@@ -6,6 +6,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from horus_bench_kit.contract import LENGTH_FINISH_REASON
 from horus_bench_kit.files import check_report
 from horus_bench_kit.scoring import (
     answer_correct,
@@ -60,6 +61,12 @@ class Profile:
 DEFAULT_PROFILE = Profile()
 
 
+def truncated_flag(finish_reason: str | None) -> bool | None:
+    if finish_reason is None:
+        return None
+    return finish_reason == LENGTH_FINISH_REASON
+
+
 def blank_review() -> list[dict[str, Any]]:
     return [{"reviewer": None, "answer_correct": None, "comment": None} for _ in range(REVIEWER_SLOTS)]
 
@@ -96,6 +103,9 @@ def question_record(
     record.update(
         {
             "answer": answer,
+            "finish_reason": outcome.get("finish_reason"),
+            "truncated": truncated_flag(outcome.get("finish_reason")),
+            "reasoning_chars": outcome.get("reasoning_chars"),
             "retrieval_steps": outcome.get("retrieval_steps"),
             "retrieved_sources": outcome.get("retrieved_sources"),
             "cited_sources": outcome.get("cited_sources"),
@@ -158,10 +168,21 @@ def _group_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def truncated_count(records: list[dict[str, Any]]) -> int | None:
+    known = [r["truncated"] for r in records if r.get("truncated") is not None]
+    return sum(1 for flag in known if flag) if known else None
+
+
+def completed_answer_rate(records: list[dict[str, Any]]) -> dict[str, Any]:
+    return rate([r.get("answer_correct_auto") for r in records if r.get("truncated") is not True])
+
+
 def build_summary(records: list[dict[str, Any]], profile: Profile = DEFAULT_PROFILE) -> dict[str, Any]:
     summary = _group_summary(records)
     summary["status"] = dict(Counter(r.get("status") for r in records))
     summary["fallbacks"] = dict(Counter(r["fallback"] for r in records if r.get("fallback")))
+    summary["truncated"] = truncated_count(records)
+    summary["answer_correct_completed"] = completed_answer_rate(records)
     summary["source_basis"] = dict(
         Counter(
             r.get("source_basis") or "not_observable"

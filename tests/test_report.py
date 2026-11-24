@@ -40,6 +40,9 @@ CORE_ITEM_KEYS = [
 ]
 SCORE_KEYS = [
     "answer",
+    "finish_reason",
+    "truncated",
+    "reasoning_chars",
     "retrieval_steps",
     "retrieved_sources",
     "cited_sources",
@@ -62,6 +65,8 @@ SUMMARY_KEYS = [
     "total_s",
     "status",
     "fallbacks",
+    "truncated",
+    "answer_correct_completed",
     "source_basis",
     "ttft_s",
     "usage",
@@ -436,3 +441,108 @@ class TestResummarize:
             resummarize(newer)
         older = {"kind": REPORT_KIND, "schema_version": 0, "questions": []}
         assert resummarize(older)["summary"]["questions"] == 0
+
+
+class TestTruncation:
+    def test_a_complete_correct_answer_is_not_truncated(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(finish_reason="stop", reasoning_chars=0))
+        assert (record["finish_reason"], record["truncated"], record["reasoning_chars"]) == ("stop", False, 0)
+        assert record["answer_correct_auto"] is True
+
+    def test_a_complete_wrong_answer_is_wrong_and_not_truncated(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(answer="Twelve.", finish_reason="stop"))
+        assert (record["truncated"], record["answer_correct_auto"]) == (False, False)
+
+    def test_a_partial_answer_cut_by_the_token_limit_is_truncated_and_kept(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(answer="There are four", finish_reason="length"))
+        assert (record["status"], record["truncated"], record["answer"]) == ("ok", True, "There are four")
+        assert record["answer_correct_auto"] is False
+
+    def test_a_cut_answer_that_already_matches_keeps_its_automatic_score(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(answer="Fourteen lanterns, and", finish_reason="length"))
+        assert (record["truncated"], record["answer_correct_auto"]) == (True, True)
+
+    def test_an_empty_answer_after_the_whole_budget_is_truncated(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(answer="", finish_reason="length", reasoning_chars=900))
+        assert (record["truncated"], record["reasoning_chars"], record["answer_correct_auto"]) == (True, 900, False)
+
+    def test_an_empty_answer_that_stopped_is_empty_not_truncated(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome(answer="", finish_reason="stop"))
+        assert (record["truncated"], record["answer_correct_auto"]) == (False, False)
+
+    def test_an_unknown_finish_reason_leaves_truncation_unknown(self, lookup_item):
+        record = question_record(lookup_item, chat_outcome())
+        assert (record["finish_reason"], record["truncated"], record["reasoning_chars"]) == (None, None, None)
+
+    def test_other_finish_reasons_are_not_truncation(self, lookup_item):
+        for reason in ("stop", "tool_calls", "content_filter"):
+            assert question_record(lookup_item, chat_outcome(finish_reason=reason))["truncated"] is False
+
+    def test_a_failed_question_keeps_its_status_and_has_no_truncation(self, lookup_item):
+        outcome = {"mode": "chat", "status": "error", "error": "HTTP 500: boom"}
+        record = question_record(lookup_item, outcome)
+        assert (record["status"], record["truncated"], record["answer_correct_auto"]) == ("error", None, False)
+
+
+class TestTruncationSummary:
+    def records(self, lookup_item):
+        outcomes = [
+            chat_outcome(finish_reason="stop"),
+            chat_outcome(answer="Twelve.", finish_reason="stop"),
+            chat_outcome(answer="There are four", finish_reason="length"),
+            chat_outcome(answer="", finish_reason="length", reasoning_chars=900),
+            {"mode": "chat", "status": "error", "error": "HTTP 500: boom"},
+            {"mode": "chat", "status": "timeout", "error": "TimeoutError: timed out"},
+            chat_outcome(answer="", finish_reason="stop"),
+            chat_outcome(),
+        ]
+        return [question_record(lookup_item, outcome) for outcome in outcomes]
+
+    def test_cut_answers_are_counted_and_left_out_of_the_completed_rate(self, lookup_item):
+        summary = build_summary(self.records(lookup_item))
+        assert summary["truncated"] == 2
+        assert summary["answer_correct_auto"] == {"n": 8, "correct": 2, "pct": 25.0}
+        assert summary["answer_correct_completed"] == {"n": 6, "correct": 2, "pct": 33.3}
+        assert summary["status"] == {"ok": 6, "error": 1, "timeout": 1}
+
+    def test_records_with_unknown_truncation_stay_in_the_completed_rate(self, lookup_item):
+        records = [
+            question_record(lookup_item, chat_outcome()),
+            question_record(lookup_item, chat_outcome(answer="No.")),
+        ]
+        summary = build_summary(records)
+        assert summary["truncated"] is None
+        assert summary["answer_correct_completed"] == summary["answer_correct_auto"] == {
+            "n": 2,
+            "correct": 1,
+            "pct": 50.0,
+        }
+
+    def test_a_run_with_nothing_cut_counts_zero(self, lookup_item):
+        summary = build_summary([question_record(lookup_item, chat_outcome(finish_reason="stop"))])
+        assert summary["truncated"] == 0
+
+    def test_retrieval_records_are_outside_both_answer_rates(self, lookup_item):
+        record = question_record(lookup_item, retrieval_outcome(["north-pier.md"]))
+        summary = build_summary([record])
+        assert summary["answer_correct_completed"] == {"n": 0, "correct": 0, "pct": None}
+        assert summary["truncated"] is None
+
+    def test_a_legacy_report_without_the_new_keys_resummarizes_as_before(self, lookup_item):
+        records = self.records(lookup_item)
+        for record in records:
+            for key in ("finish_reason", "truncated", "reasoning_chars"):
+                del record[key]
+        legacy = build_report(label="old", run={}, testset={}, records=records)
+        legacy["summary"] = {"questions": len(records)}
+        summary = resummarize(legacy)["summary"]
+        assert summary["answer_correct_auto"] == {"n": 8, "correct": 2, "pct": 25.0}
+        assert summary["answer_correct_completed"] == summary["answer_correct_auto"]
+        assert summary["truncated"] is None
+
+    def test_resummarize_recounts_after_an_edit(self, lookup_item):
+        report = build_report(label="r", run={}, testset={}, records=self.records(lookup_item))
+        report["questions"][2]["truncated"] = False
+        summary = resummarize(report)["summary"]
+        assert summary["truncated"] == 1
+        assert summary["answer_correct_completed"]["n"] == 7

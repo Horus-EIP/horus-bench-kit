@@ -33,6 +33,9 @@ QUESTION_KEYS = [
     "total_s",
     "usage",
     "answer",
+    "finish_reason",
+    "truncated",
+    "reasoning_chars",
     "retrieval_steps",
     "retrieved_sources",
     "cited_sources",
@@ -353,3 +356,106 @@ class TestEntryPoints:
         with pytest.raises(SystemExit) as raised:
             main([])
         assert raised.value.code == 2
+
+
+class TestRunTruncationAndReasoning:
+    def test_answers_cut_by_the_token_limit_are_flagged_and_counted(self, run_args, fake_openai, capsys):
+        fake_openai.finish_reason = "length"
+        fake_openai.answer = lambda _body: ""
+        assert main(run_args("--ids", "fg-01,fg-09", "--max-tokens", "64")) == 0
+        output = capsys.readouterr().out
+        report = written_report(output)
+        assert [q["truncated"] for q in report["questions"]] == [True, True]
+        assert [q["status"] for q in report["questions"]] == ["ok", "ok"]
+        assert report["summary"]["truncated"] == 2
+        assert report["summary"]["answer_correct_completed"] == {"n": 0, "correct": 0, "pct": None}
+        progress = [line for line in output.splitlines() if line.startswith("[  ")]
+        assert all(line.endswith("[cut while thinking]") for line in progress) and len(progress) == 2
+        assert "[warn] 2 answer(s) ended with finish reason 'length'" in output
+        assert "(--max-tokens was 64; the server may have a lower limit of its own)" in output
+        headline = json.loads(output[output.index("{") : output.rindex("}") + 1])
+        assert headline["truncated"] == 2
+
+    def test_a_streamed_reasoning_only_reply_cut_by_the_limit_is_cut_while_thinking(
+        self, run_args, fake_openai, capsys
+    ):
+        fake_openai.finish_reason = "length"
+        fake_openai.answer = lambda _body: ""
+        assert main(run_args("--ids", "fg-01")) == 0
+        output = capsys.readouterr().out
+        question = written_report(output)["questions"][0]
+        assert (question["answer"], question["finish_reason"], question["truncated"]) == ("", "length", True)
+        assert question["reasoning_chars"] == len("Reading.")
+        assert question["answer_correct_auto"] is False
+        line = next(line for line in output.splitlines() if line.startswith("[  1/1] fg-01"))
+        assert line.endswith("[cut while thinking]")
+
+    def test_a_run_with_complete_answers_prints_no_warning(self, run_args, fake_openai, example_answers, capsys):
+        fake_openai.answer = example_answers()
+        assert main(run_args("--ids", "fg-01,fg-09")) == 0
+        output = capsys.readouterr().out
+        report = written_report(output)
+        assert [q["finish_reason"] for q in report["questions"]] == ["stop", "stop"]
+        assert report["summary"]["truncated"] == 0
+        assert report["summary"]["answer_correct_completed"] == report["summary"]["answer_correct_auto"]
+        assert "[warn]" not in output and "[cut" not in output
+
+    def test_a_whole_reply_cut_by_the_limit_is_flagged_too(self, run_args, fake_openai, capsys):
+        fake_openai.finish_reason = "length"
+        fake_openai.answer = lambda _body: "The garden opens at"
+        assert main(run_args("--ids", "fg-01", "--no-stream")) == 0
+        output = capsys.readouterr().out
+        question = written_report(output)["questions"][0]
+        assert (question["truncated"], question["answer"]) == (True, "The garden opens at")
+        assert "[cut at the token limit]" in output
+
+    def test_reasoning_settings_are_sent_and_recorded(self, run_args, fake_openai, capsys):
+        extra = '{"chat_template_kwargs": {"enable_thinking": false}}'
+        assert main(run_args("--ids", "fg-01", "--reasoning-effort", "high", "--extra-body", extra)) == 0
+        report = written_report(capsys.readouterr().out)
+        body = fake_openai.requests[0]["body"]
+        assert body["reasoning_effort"] == "high"
+        assert body["chat_template_kwargs"] == {"enable_thinking": False}
+        assert report["run"]["settings"]["reasoning_effort"] == "high"
+        assert report["run"]["settings"]["extra_body"] == {"chat_template_kwargs": {"enable_thinking": False}}
+
+    def test_without_reasoning_settings_nothing_is_sent_and_null_is_recorded(self, run_args, fake_openai, capsys):
+        assert main(run_args("--ids", "fg-01")) == 0
+        report = written_report(capsys.readouterr().out)
+        assert "reasoning_effort" not in fake_openai.requests[0]["body"]
+        assert "chat_template_kwargs" not in fake_openai.requests[0]["body"]
+        assert (report["run"]["settings"]["reasoning_effort"], report["run"]["settings"]["extra_body"]) == (None, None)
+
+    def test_a_server_that_refuses_a_field_gives_errors_not_scores(self, run_args, fake_openai, capsys):
+        fake_openai.status = 400
+        assert main(run_args("--ids", "fg-01", "--extra-body", '{"think": false}')) == 1
+        output = capsys.readouterr().out
+        assert "HTTP 400" in output
+        assert "[error] no question got an answer from http://127.0.0.1:" in output
+
+    @pytest.mark.parametrize(
+        ("value", "message"),
+        [
+            ("{nope", "--extra-body is not valid JSON: "),
+            ("[1, 2]", "--extra-body must be a JSON object"),
+            ('"text"', "--extra-body must be a JSON object"),
+            ('{"max_tokens": 4096}', "--extra-body must not set 'max_tokens': use --max-tokens"),
+            ('{"reasoning_effort": "low"}', "--extra-body must not set 'reasoning_effort': use --reasoning-effort"),
+            ('{"stream": false}', "--extra-body must not set 'stream': use --no-stream"),
+            ('{"model": "x"}', "--extra-body must not set 'model': use --model"),
+        ],
+    )
+    def test_a_bad_extra_body_exits_with_2(self, run_args, fake_openai, capsys, value, message):
+        assert main(run_args("--extra-body", value)) == 2
+        assert any(line.startswith(f"[error] {message}") for line in capsys.readouterr().out.splitlines())
+        assert fake_openai.requests == []
+
+    def test_any_one_word_reasoning_effort_is_sent_as_given(self, run_args, fake_openai, capsys):
+        assert main(run_args("--ids", "fg-01", "--reasoning-effort", "none")) == 0
+        assert fake_openai.requests[0]["body"]["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("value", ["", " low", "very high"])
+    def test_a_reasoning_effort_that_is_not_one_word_exits_with_2(self, run_args, fake_openai, capsys, value):
+        assert main(run_args("--reasoning-effort", value)) == 2
+        assert "[error] --reasoning-effort must be one word, such as low" in capsys.readouterr().out.splitlines()
+        assert fake_openai.requests == []

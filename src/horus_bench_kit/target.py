@@ -27,6 +27,8 @@ class Outcome(TypedDict, total=False):
     total_s: float | None
     models: list[str]
     usage: dict[str, Any] | None
+    finish_reason: str | None
+    reasoning_chars: int | None
 
 
 @runtime_checkable
@@ -44,17 +46,29 @@ class Hooks(Protocol):
     async def after(self, outcome: dict[str, Any]) -> None: ...
 
 
+def cut_while_thinking(record: dict[str, Any]) -> bool:
+    return not (record.get("answer") or "").strip() and bool(record.get("reasoning_chars"))
+
+
+def truncation_note(record: dict[str, Any]) -> str | None:
+    if record.get("truncated") is not True:
+        return None
+    return "cut while thinking" if cut_while_thinking(record) else "cut at the token limit"
+
+
 def progress_line(index: int, total: int, record: dict[str, Any]) -> str:
     def flag(value: bool | None) -> str:
         return "-" if value is None else ("yes" if value else "no")
 
     seconds = record.get("total_s")
     shown = f"{seconds:8.2f}s" if isinstance(seconds, (int, float)) else "       ?s"
+    note = truncation_note(record)
     return (
         f"[{index:3}/{total}] {record['id']:10} {record['status']:7} {shown}  "
         f"answer={flag(record.get('answer_correct_auto'))} "
         f"source={flag(record.get('source_correct_auto'))} "
         f"route={flag(record.get('route_correct'))}"
+        + (f"  [{note}]" if note else "")
         + (f"  ({record['error']})" if record.get("error") else "")
     )
 
