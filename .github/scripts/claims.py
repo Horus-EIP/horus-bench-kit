@@ -16,7 +16,6 @@ GITHUB_FOLDER = Path(__file__).resolve().parents[1]
 REPLIES = GITHUB_FOLDER / "replies"
 PHRASES = GITHUB_FOLDER / "claim-phrases.json"
 API = "https://api.github.com"
-ELIGIBLE_LABELS = frozenset({"good first issue", "help wanted"})
 SUGGESTED_LABEL = "good first issue"
 CLAIMED = "claimed"
 CLAIMED_COLOR = "c5def5"
@@ -114,7 +113,7 @@ def decide(body: str, commenter: str, issue: Issue, open_claims: int, phrases: P
         return UNASSIGN if holds_it else IGNORE
     if not is_claim(body, phrases):
         return IGNORE
-    if issue.state != "open" or not issue.labels & ELIGIBLE_LABELS:
+    if issue.state != "open":
         return NOT_ELIGIBLE
     if holds_it:
         return IGNORE
@@ -235,11 +234,12 @@ def open_claims(github: GitHub, login: str) -> int:
 
 
 def suggestions(github: GitHub, current: int) -> str:
-    free = [item for item in github.open_items(labels=SUGGESTED_LABEL, assignee="none")
-            if "pull_request" not in item and int(item["number"]) != current][:SUGGESTIONS]
+    free = [item for item in github.open_items(assignee="none")
+            if "pull_request" not in item and int(item["number"]) != current]
+    free.sort(key=lambda item: SUGGESTED_LABEL not in {str(label["name"]).lower() for label in item.get("labels", [])})
     if not free:
-        return "There is no other free good first issue right now: watch the repository for new ones."
-    return "\n".join(f"- #{item['number']} {item['title']}" for item in free)
+        return "There is no other free issue right now: watch the repository for new ones."
+    return "\n".join(f"- #{item['number']} {item['title']}" for item in free[:SUGGESTIONS])
 
 
 def reminder_mark(login: str) -> str:
